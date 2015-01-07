@@ -450,6 +450,54 @@ static char *oauth_provider_get_current_uri(TSRMLS_D)
 	return NULL;
 }
 
+/* Merge an array into a hash, recursively converting its arrays into entries like key[subkey][0]=value */
+void oauth_provider_merge_request_hash(HashTable *dest, char * name, zval *a) {
+    zval **item = NULL;
+    ulong param_count, num_key=0;
+    HashPosition hpos;
+    char *in_key;
+    char *in_key_string;
+    uint in_key_len;
+    int key_type;
+    char *out_key;
+    uint out_key_len;
+
+    zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(a), &hpos);
+    do {
+        if(FAILURE!=(key_type=zend_hash_get_current_key_ex(Z_ARRVAL_P(a), &in_key, &in_key_len, &num_key, 0, &hpos))) {
+            in_key_string = ZEND_HASH_KEY_STRVAL(in_key);
+            if(FAILURE!=zend_hash_get_current_data_ex(Z_ARRVAL_P(a), (void **)&item, &hpos)) {
+                if (!name) { /* depth = 0 */
+                    spprintf(&out_key, 0, "%s", in_key_string);
+                }
+                else {
+                    if (key_type == HASH_KEY_IS_STRING) {
+                        spprintf(&out_key, 0, "%s[%s]", name, in_key_string);
+                    }
+                    else {
+                        spprintf(&out_key, 0, "%s[%lu]", name, num_key);
+                    }
+                }
+                out_key_len = strlen(out_key);
+
+                if(Z_TYPE_PP(item)==IS_ARRAY) {
+                    /* loop */
+                    oauth_provider_merge_request_hash(dest, out_key, *item);
+                }
+                else {
+                    /* a leaf is reached, append to the output */
+                    zval *tmp;
+                    ALLOC_ZVAL(tmp);
+                    MAKE_COPY_ZVAL(item, tmp);
+                    zend_hash_update(dest, out_key, out_key_len+1, &tmp, sizeof(zval **), NULL);
+                }
+
+                efree(out_key);
+            }
+        }
+    } while(zend_hash_move_forward_ex(Z_ARRVAL_P(a), &hpos)==SUCCESS);
+}
+
 /* {{{ proto void OAuthProvider::__construct()
    Instantiate a new OAuthProvider object */
 SOP_METHOD(__construct)
@@ -704,12 +752,10 @@ SOP_METHOD(checkOAuthRequest)
 	zend_hash_init(sbs_vars, 0, NULL, ZVAL_PTR_DTOR, 0);
 
 	if(PG(http_globals)[TRACK_VARS_GET]) {
-		zval *tmp_copy;
-		zend_hash_merge(sbs_vars, HASH_OF(PG(http_globals)[TRACK_VARS_GET]), (copy_ctor_func_t)zval_add_ref, (void *)&tmp_copy, sizeof(zval *), 0);
+		oauth_provider_merge_request_hash(sbs_vars, NULL, PG(http_globals)[TRACK_VARS_GET]);
 	}
 	if(PG(http_globals)[TRACK_VARS_POST]) {
-		zval *tmp_copy;
-		zend_hash_merge(sbs_vars, HASH_OF(PG(http_globals)[TRACK_VARS_POST]), (copy_ctor_func_t)zval_add_ref, (void *)&tmp_copy, sizeof(zval *), 0);
+		oauth_provider_merge_request_hash(sbs_vars, NULL, PG(http_globals)[TRACK_VARS_POST]);
 	}
 	if(zend_hash_num_elements(sop->oauth_params)) {
 		zval *tmp_copy;
